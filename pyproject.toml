@@ -1,0 +1,18 @@
+[project]
+name = "file-sharing-application"
+version = "0.1.0"
+description = "File sharing app with FastAPI, PostgreSQL, and MinIO"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "boto3==1.39.14",
+  "fastapi==0.116.1",
+  "pydantic-settings==2.10.1",
+  "psycopg[binary]==3.2.9",
+  "python-multipart==0.0.20",
+  "sqlalchemy==2.0.43",
+  "uvicorn[standard]==0.35.0",
+]
+
+[tool.uv]
+package = false
