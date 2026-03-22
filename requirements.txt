@@ -5,3 +5,4 @@ psycopg[binary]==3.2.9
 boto3==1.39.14
 python-multipart==0.0.20
 pydantic-settings==2.10.1
+alembic==1.16.4
