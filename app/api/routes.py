@@ -1,8 +1,9 @@
 import datetime as dt
+from pathlib import Path
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,12 @@ public_router = APIRouter()
 @public_router.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@public_router.get("/demo")
+def demo_page():
+    demo_path = Path(__file__).resolve().parent.parent / "web" / "demo.html"
+    return FileResponse(demo_path)
 
 
 def _validate_upload_size(size_bytes: int) -> None:

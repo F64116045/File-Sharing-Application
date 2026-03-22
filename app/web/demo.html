@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>File Sharing Demo</title>
+    <style>
+      :root {
+        --bg: #f6f7fb;
+        --card: #ffffff;
+        --text: #172133;
+        --muted: #5a6780;
+        --accent: #0f6cf6;
+        --ok: #0f9d58;
+        --err: #c53929;
+        --border: #d7deea;
+      }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Noto Sans", sans-serif;
+        background: radial-gradient(circle at top, #ffffff, var(--bg));
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 28px auto;
+        padding: 0 16px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 26px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: var(--muted);
+      }
+      label {
+        display: block;
+        font-size: 14px;
+        margin-bottom: 6px;
+      }
+      input,
+      button {
+        font-size: 14px;
+      }
+      input[type="number"] {
+        width: 120px;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      button {
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        word-break: break-all;
+      }
+      progress {
+        width: 100%;
+        height: 14px;
+      }
+      .log {
+        background: #0e1525;
+        color: #dae7ff;
+        border-radius: 10px;
+        padding: 12px;
+        min-height: 140px;
+        white-space: pre-wrap;
+      }
+      .ok { color: var(--ok); }
+      .err { color: var(--err); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>File Sharing Demo</h1>
+        <p>Upload flow: initiate upload -> direct upload -> complete -> create share.</p>
+        <div class="row">
+          <input id="fileInput" type="file" />
+          <label>
+            Expires (hours)
+            <input id="expiresInput" type="number" min="1" max="168" value="24" />
+          </label>
+          <button id="runBtn">Run Full Flow</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <label>Upload Progress</label>
+        <progress id="progress" value="0" max="100"></progress>
+        <p id="progressText" class="mono">0%</p>
+      </div>
+
+      <div class="card">
+        <p><strong>File ID:</strong> <span id="fileId" class="mono">-</span></p>
+        <p><strong>Share URL:</strong> <a id="shareUrl" class="mono" href="#" target="_blank">-</a></p>
+      </div>
+
+      <div class="card">
+        <label>Logs</label>
+        <div id="logs" class="log"></div>
+      </div>
+    </div>
+
+    <script>
+      const fileInput = document.getElementById("fileInput");
+      const expiresInput = document.getElementById("expiresInput");
+      const runBtn = document.getElementById("runBtn");
+      const progress = document.getElementById("progress");
+      const progressText = document.getElementById("progressText");
+      const fileIdEl = document.getElementById("fileId");
+      const shareUrlEl = document.getElementById("shareUrl");
+      const logsEl = document.getElementById("logs");
+
+      function log(msg) {
+        logsEl.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+        logsEl.scrollTop = logsEl.scrollHeight;
+      }
+
+      async function apiJson(url, options) {
+        const res = await fetch(url, options);
+        let body;
+        try {
+          body = await res.json();
+        } catch {
+          body = null;
+        }
+        if (!res.ok) {
+          throw new Error(body?.detail || `HTTP ${res.status}`);
+        }
+        return body;
+      }
+
+      function uploadDirect(uploadUrl, file) {
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", uploadUrl);
+          xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+
+          xhr.upload.onprogress = (e) => {
+            if (!e.lengthComputable) return;
+            const pct = Math.round((e.loaded / e.total) * 100);
+            progress.value = pct;
+            progressText.textContent = `${pct}%`;
+          };
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve();
+            } else {
+              reject(new Error(`Upload failed with HTTP ${xhr.status}`));
+            }
+          };
+
+          xhr.onerror = () => reject(new Error("Upload network error"));
+          xhr.send(file);
+        });
+      }
+
+      runBtn.addEventListener("click", async () => {
+        const file = fileInput.files?.[0];
+        if (!file) {
+          alert("Please select a file first.");
+          return;
+        }
+
+        runBtn.disabled = true;
+        progress.value = 0;
+        progressText.textContent = "0%";
+        fileIdEl.textContent = "-";
+        shareUrlEl.textContent = "-";
+        shareUrlEl.removeAttribute("href");
+        logsEl.textContent = "";
+
+        try {
+          log("1) Initiating upload...");
+          const initData = await apiJson("/api/v1/uploads/initiate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              original_name: file.name,
+              mime_type: file.type || "application/octet-stream",
+              size_bytes: file.size,
+            }),
+          });
+
+          const fileId = initData.file_id;
+          fileIdEl.textContent = fileId;
+          log(`Initiated. file_id=${fileId}`);
+
+          log("2) Uploading file directly to S3/MinIO...");
+          await uploadDirect(initData.upload_url, file);
+          log("Direct upload completed.");
+
+          log("3) Completing upload on backend...");
+          await apiJson(`/api/v1/uploads/${fileId}/complete`, { method: "POST" });
+          log("Upload confirmed.");
+
+          const expires = Number(expiresInput.value || 24);
+          log("4) Creating share link...");
+          const shareData = await apiJson(
+            `/api/v1/files/${fileId}/shares?expires_in_hours=${expires}`,
+            { method: "POST" }
+          );
+
+          shareUrlEl.textContent = shareData.download_url;
+          shareUrlEl.href = shareData.download_url;
+          log("Share link generated.");
+          log("5) Click Share URL to test download.");
+        } catch (err) {
+          log(`ERROR: ${err.message}`);
+          alert(`Flow failed: ${err.message}`);
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
