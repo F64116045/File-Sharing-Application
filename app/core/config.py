@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     s3_bucket: str = "shared-files"
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = False
+    s3_presign_upload_expires_seconds: int = 900
+    s3_presign_download_expires_seconds: int = 300
 
     default_expires_hours: int = 24
     max_upload_size_mb: int = 50
