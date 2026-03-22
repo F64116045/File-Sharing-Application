@@ -1,8 +1,8 @@
 import datetime as dt
 import uuid
 
-from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,7 +10,12 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.file import File
 from app.models.share import Share
-from app.schemas.share import CreateShareResponse, UploadFileResponse
+from app.schemas.share import (
+    CompleteUploadResponse,
+    CreateShareResponse,
+    InitiateUploadRequest,
+    InitiateUploadResponse,
+)
 from app.services.security import generate_share_token, hash_token
 from app.services.storage import storage_service
 
@@ -23,31 +28,24 @@ def health_check():
     return {"status": "ok"}
 
 
-def _validate_upload_size(file: UploadFile) -> int:
-    file.file.seek(0, 2)
-    size_bytes = file.file.tell()
-    file.file.seek(0)
-
+def _validate_upload_size(size_bytes: int) -> None:
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     if size_bytes > max_bytes:
         raise HTTPException(status_code=413, detail=f"File too large. Max {settings.max_upload_size_mb} MB")
-    return size_bytes
 
 
-def _upload_file(file: UploadFile) -> File:
+def _build_upload_file(payload: InitiateUploadRequest) -> File:
     file_id = uuid.uuid4()
-    object_key = f"uploads/{file_id}/{file.filename}"
-    mime_type = file.content_type or "application/octet-stream"
-    size_bytes = _validate_upload_size(file)
-
-    storage_service.upload_fileobj(file.file, object_key=object_key, content_type=mime_type)
+    object_key = f"uploads/{file_id}"
+    _validate_upload_size(payload.size_bytes)
 
     return File(
         id=file_id,
-        original_name=file.filename,
+        original_name=payload.original_name,
         object_key=object_key,
-        mime_type=mime_type,
-        size_bytes=size_bytes,
+        mime_type=payload.mime_type,
+        size_bytes=payload.size_bytes,
+        is_uploaded=False,
     )
 
 
@@ -59,19 +57,64 @@ def _create_share(file_id: uuid.UUID, expires_in_hours: int) -> tuple[Share, str
     return Share(file_id=file_id, token_hash=token_digest, expires_at=expires_at), token
 
 
-@api_router.post("/files/upload", response_model=UploadFileResponse)
-def upload_file(
-    file: UploadFile = FastAPIFile(...),
+@api_router.post("/uploads/initiate", response_model=InitiateUploadResponse)
+def initiate_upload(
+    payload: InitiateUploadRequest,
     db: Session = Depends(get_db),
 ):
-    db_file = _upload_file(file)
+    db_file = _build_upload_file(payload)
     db.add(db_file)
     db.commit()
-    return UploadFileResponse(
+    upload_url = storage_service.generate_presigned_upload_url(
+        object_key=db_file.object_key,
+        content_type=db_file.mime_type,
+    )
+    upload_expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+        seconds=settings.s3_presign_upload_expires_seconds
+    )
+    return InitiateUploadResponse(
         file_id=str(db_file.id),
-        original_name=db_file.original_name,
-        mime_type=db_file.mime_type,
-        size_bytes=db_file.size_bytes,
+        object_key=db_file.object_key,
+        upload_url=upload_url,
+        upload_expires_at=upload_expires_at,
+    )
+
+
+@api_router.post("/uploads/{file_id}/complete", response_model=CompleteUploadResponse)
+def complete_upload(file_id: uuid.UUID, db: Session = Depends(get_db)):
+    file = db.get(File, file_id)
+    if file is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if file.is_uploaded:
+        return CompleteUploadResponse(
+            file_id=str(file.id),
+            is_uploaded=True,
+            original_name=file.original_name,
+            mime_type=file.mime_type,
+            size_bytes=file.size_bytes,
+        )
+
+    object_metadata = storage_service.head_object(file.object_key)
+    if object_metadata is None:
+        raise HTTPException(status_code=409, detail="Object not uploaded yet")
+
+    actual_size_bytes = int(object_metadata.get("ContentLength", 0))
+    _validate_upload_size(actual_size_bytes)
+    if actual_size_bytes != file.size_bytes:
+        raise HTTPException(status_code=409, detail="Uploaded object size mismatch")
+
+    file.is_uploaded = True
+    db.add(file)
+    db.commit()
+    db.refresh(file)
+
+    return CompleteUploadResponse(
+        file_id=str(file.id),
+        is_uploaded=file.is_uploaded,
+        original_name=file.original_name,
+        mime_type=file.mime_type,
+        size_bytes=file.size_bytes,
     )
 
 
@@ -84,6 +127,8 @@ def create_share(
     file = db.get(File, file_id)
     if file is None:
         raise HTTPException(status_code=404, detail="File not found")
+    if not file.is_uploaded:
+        raise HTTPException(status_code=409, detail="File upload not completed")
 
     db_share, token = _create_share(file_id=file.id, expires_in_hours=expires_in_hours)
     db.add(db_share)
@@ -110,7 +155,11 @@ def download_by_share_token(token: str, db: Session = Depends(get_db)):
     file = db.get(File, share.file_id)
     if file is None:
         raise HTTPException(status_code=404, detail="File not found")
+    if not file.is_uploaded:
+        raise HTTPException(status_code=404, detail="File not available")
 
-    stream = storage_service.get_object_stream(file.object_key)
-    headers = {"Content-Disposition": f'attachment; filename="{file.original_name}"'}
-    return StreamingResponse(stream, media_type=file.mime_type, headers=headers)
+    download_url = storage_service.generate_presigned_download_url(
+        object_key=file.object_key,
+        filename=file.original_name,
+    )
+    return RedirectResponse(url=download_url, status_code=307)

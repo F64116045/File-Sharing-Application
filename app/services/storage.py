@@ -1,3 +1,4 @@
+from botocore.exceptions import ClientError
 from botocore.client import Config
 import boto3
 
@@ -21,17 +22,35 @@ class StorageService:
         if not any(bucket["Name"] == settings.s3_bucket for bucket in buckets):
             self.client.create_bucket(Bucket=settings.s3_bucket)
 
-    def upload_fileobj(self, fileobj, object_key: str, content_type: str) -> None:
-        self.client.upload_fileobj(
-            Fileobj=fileobj,
-            Bucket=settings.s3_bucket,
-            Key=object_key,
-            ExtraArgs={"ContentType": content_type},
+    def generate_presigned_upload_url(self, object_key: str, content_type: str) -> str:
+        return self.client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": settings.s3_bucket,
+                "Key": object_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=settings.s3_presign_upload_expires_seconds,
         )
 
-    def get_object_stream(self, object_key: str):
-        response = self.client.get_object(Bucket=settings.s3_bucket, Key=object_key)
-        return response["Body"]
+    def generate_presigned_download_url(self, object_key: str, filename: str) -> str:
+        return self.client.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": settings.s3_bucket,
+                "Key": object_key,
+                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+            },
+            ExpiresIn=settings.s3_presign_download_expires_seconds,
+        )
+
+    def head_object(self, object_key: str) -> dict | None:
+        try:
+            return self.client.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
 
 
 storage_service = StorageService()
