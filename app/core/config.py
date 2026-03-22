@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
 
     s3_endpoint_url: str = "http://localhost:9000"
+    s3_public_endpoint_url: str | None = None
     s3_access_key: str
     s3_secret_key: str
     s3_bucket: str = "shared-files"
