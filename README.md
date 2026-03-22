@@ -57,7 +57,7 @@ flowchart LR
     FE -->|Create share link| API
     API -->|Store token hash + expiry| DB
 
-    FE -->|GET /s/{token}| API
+    FE -->|GET /s/:token| API
     API -->|Validate token + expiry| DB
     API -->|307 redirect with presigned GET URL| FE
     FE -->|Direct download| S3
@@ -87,9 +87,9 @@ sequenceDiagram
 
     FE->>API: POST /api/v1/files/{file_id}/shares?expires_in_hours=24
     API->>DB: Insert share (token_hash, expires_at)
-    API-->>FE: download_url (/s/{token})
+    API-->>FE: download_url (/s/:token)
 
-    FE->>API: GET /s/{token}
+    FE->>API: GET /s/:token
     API->>DB: Validate token + expiry + file status
     API-->>FE: 307 redirect (presigned GET URL)
     FE->>S3: GET object
