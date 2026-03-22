@@ -5,6 +5,7 @@ description = "File sharing app with FastAPI, PostgreSQL, and MinIO"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "alembic==1.16.4",
   "boto3==1.39.14",
   "fastapi==0.116.1",
   "pydantic-settings==2.10.1",
