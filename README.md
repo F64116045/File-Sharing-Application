@@ -1,6 +1,8 @@
 # File Sharing Application
 
-A backend-focused file sharing web application built with FastAPI, PostgreSQL, and MinIO (S3-compatible API).
+This repository is my submission for the PicCollage Backend Developer Intern Take-Home Quiz.
+
+A FastAPI file sharing application with expiring links, presigned MinIO (S3-compatible API) uploads/downloads, PostgreSQL metadata, and Dockerized setup.
 
 ## TL;DR
 ```bash
@@ -12,6 +14,9 @@ docker compose exec app alembic upgrade head
 Open:
 - Demo UI: `http://localhost:8000/demo`
 - Swagger: `http://localhost:8000/docs`
+
+## Quick Demo
+![Quick Demo](assets/Demo.gif)
 
 ## Scope
 This project currently supports:
