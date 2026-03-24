@@ -1,9 +1,12 @@
 import datetime as dt
+import logging
 from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from botocore.exceptions import BotoCoreError, ClientError, ConnectTimeoutError, EndpointConnectionError
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,6 +25,11 @@ from app.services.storage import storage_service
 
 api_router = APIRouter()
 public_router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", "unknown")
 
 
 @public_router.get("/health")
@@ -67,106 +75,159 @@ def _create_share(file_id: uuid.UUID, expires_in_hours: int) -> tuple[Share, str
 @api_router.post("/uploads/initiate", response_model=InitiateUploadResponse)
 def initiate_upload(
     payload: InitiateUploadRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    db_file = _build_upload_file(payload)
-    db.add(db_file)
-    db.commit()
-    upload_url = storage_service.generate_presigned_upload_url(
-        object_key=db_file.object_key,
-        content_type=db_file.mime_type,
-    )
-    upload_expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
-        seconds=settings.s3_presign_upload_expires_seconds
-    )
-    return InitiateUploadResponse(
-        file_id=str(db_file.id),
-        object_key=db_file.object_key,
-        upload_url=upload_url,
-        upload_expires_at=upload_expires_at,
-    )
+    rid = _request_id(request)
+    try:
+        db_file = _build_upload_file(payload)
+        db.add(db_file)
+        db.commit()
+        upload_url = storage_service.generate_presigned_upload_url(
+            object_key=db_file.object_key,
+            content_type=db_file.mime_type,
+        )
+        upload_expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+            seconds=settings.s3_presign_upload_expires_seconds
+        )
+        logger.info("upload initiated file_id=%s request_id=%s", db_file.id, rid)
+        return InitiateUploadResponse(
+            file_id=str(db_file.id),
+            object_key=db_file.object_key,
+            upload_url=upload_url,
+            upload_expires_at=upload_expires_at,
+        )
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error during initiate upload request_id=%s", rid)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    except (EndpointConnectionError, ConnectTimeoutError):
+        logger.exception("Storage connectivity error during initiate upload request_id=%s", rid)
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+    except (BotoCoreError, ClientError):
+        logger.exception("Storage error during initiate upload request_id=%s", rid)
+        raise HTTPException(status_code=502, detail="Storage operation failed")
 
 
 @api_router.post("/uploads/{file_id}/complete", response_model=CompleteUploadResponse)
-def complete_upload(file_id: uuid.UUID, db: Session = Depends(get_db)):
-    file = db.get(File, file_id)
-    if file is None:
-        raise HTTPException(status_code=404, detail="File not found")
+def complete_upload(file_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
+    rid = _request_id(request)
+    try:
+        file = db.get(File, file_id)
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
 
-    if file.is_uploaded:
+        if file.is_uploaded:
+            return CompleteUploadResponse(
+                file_id=str(file.id),
+                is_uploaded=True,
+                original_name=file.original_name,
+                mime_type=file.mime_type,
+                size_bytes=file.size_bytes,
+            )
+
+        object_metadata = storage_service.head_object(file.object_key)
+        if object_metadata is None:
+            raise HTTPException(status_code=409, detail="Object not uploaded yet")
+
+        actual_size_bytes = int(object_metadata.get("ContentLength", 0))
+        _validate_upload_size(actual_size_bytes)
+        if actual_size_bytes != file.size_bytes:
+            raise HTTPException(status_code=409, detail="Uploaded object size mismatch")
+
+        file.is_uploaded = True
+        db.add(file)
+        db.commit()
+        db.refresh(file)
+        logger.info("upload completed file_id=%s request_id=%s", file.id, rid)
+
         return CompleteUploadResponse(
             file_id=str(file.id),
-            is_uploaded=True,
+            is_uploaded=file.is_uploaded,
             original_name=file.original_name,
             mime_type=file.mime_type,
             size_bytes=file.size_bytes,
         )
-
-    object_metadata = storage_service.head_object(file.object_key)
-    if object_metadata is None:
-        raise HTTPException(status_code=409, detail="Object not uploaded yet")
-
-    actual_size_bytes = int(object_metadata.get("ContentLength", 0))
-    _validate_upload_size(actual_size_bytes)
-    if actual_size_bytes != file.size_bytes:
-        raise HTTPException(status_code=409, detail="Uploaded object size mismatch")
-
-    file.is_uploaded = True
-    db.add(file)
-    db.commit()
-    db.refresh(file)
-
-    return CompleteUploadResponse(
-        file_id=str(file.id),
-        is_uploaded=file.is_uploaded,
-        original_name=file.original_name,
-        mime_type=file.mime_type,
-        size_bytes=file.size_bytes,
-    )
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error during complete upload file_id=%s request_id=%s", file_id, rid)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    except (EndpointConnectionError, ConnectTimeoutError):
+        logger.exception("Storage connectivity error during complete upload file_id=%s request_id=%s", file_id, rid)
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+    except (BotoCoreError, ClientError):
+        logger.exception("Storage error during complete upload file_id=%s request_id=%s", file_id, rid)
+        raise HTTPException(status_code=502, detail="Storage operation failed")
 
 
 @api_router.post("/files/{file_id}/shares", response_model=CreateShareResponse)
 def create_share(
     file_id: uuid.UUID,
+    request: Request,
     expires_in_hours: int = Query(default=settings.default_expires_hours, ge=1, le=168),
     db: Session = Depends(get_db),
 ):
-    file = db.get(File, file_id)
-    if file is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    if not file.is_uploaded:
-        raise HTTPException(status_code=409, detail="File upload not completed")
+    rid = _request_id(request)
+    try:
+        file = db.get(File, file_id)
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        if not file.is_uploaded:
+            raise HTTPException(status_code=409, detail="File upload not completed")
 
-    db_share, token = _create_share(file_id=file.id, expires_in_hours=expires_in_hours)
-    db.add(db_share)
-    db.commit()
+        db_share, token = _create_share(file_id=file.id, expires_in_hours=expires_in_hours)
+        db.add(db_share)
+        db.commit()
+        logger.info("share created file_id=%s share_id=%s request_id=%s", file.id, db_share.id, rid)
 
-    return CreateShareResponse(
-        file_id=str(file.id),
-        expires_at=db_share.expires_at,
-        download_url=f"{settings.base_url}/s/{token}",
-    )
+        return CreateShareResponse(
+            file_id=str(file.id),
+            expires_at=db_share.expires_at,
+            download_url=f"{settings.base_url}/s/{token}",
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error during create share file_id=%s request_id=%s", file_id, rid)
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @public_router.get("/s/{token}")
-def download_by_share_token(token: str, db: Session = Depends(get_db)):
-    token_digest = hash_token(token)
-    share = db.scalar(select(Share).where(Share.token_hash == token_digest))
+def download_by_share_token(token: str, request: Request, db: Session = Depends(get_db)):
+    rid = _request_id(request)
+    try:
+        token_digest = hash_token(token)
+        share = db.scalar(select(Share).where(Share.token_hash == token_digest))
 
-    if share is None:
-        raise HTTPException(status_code=404, detail="Invalid share link")
+        if share is None:
+            raise HTTPException(status_code=404, detail="Invalid share link")
 
-    if dt.datetime.now(dt.timezone.utc) > share.expires_at:
-        raise HTTPException(status_code=410, detail="Share link expired")
+        if dt.datetime.now(dt.timezone.utc) > share.expires_at:
+            raise HTTPException(status_code=410, detail="Share link expired")
 
-    file = db.get(File, share.file_id)
-    if file is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    if not file.is_uploaded:
-        raise HTTPException(status_code=404, detail="File not available")
+        file = db.get(File, share.file_id)
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        if not file.is_uploaded:
+            raise HTTPException(status_code=404, detail="File not available")
 
-    download_url = storage_service.generate_presigned_download_url(
-        object_key=file.object_key,
-        filename=file.original_name,
-    )
-    return RedirectResponse(url=download_url, status_code=307)
+        download_url = storage_service.generate_presigned_download_url(
+            object_key=file.object_key,
+            filename=file.original_name,
+        )
+        logger.info("download link issued file_id=%s request_id=%s", file.id, rid)
+        return RedirectResponse(url=download_url, status_code=307)
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        logger.exception("Database error during token download request_id=%s", rid)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    except (EndpointConnectionError, ConnectTimeoutError):
+        logger.exception("Storage connectivity error during token download request_id=%s", rid)
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+    except (BotoCoreError, ClientError):
+        logger.exception("Storage error during token download request_id=%s", rid)
+        raise HTTPException(status_code=502, detail="Storage operation failed")
