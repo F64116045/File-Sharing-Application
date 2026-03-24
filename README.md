@@ -159,3 +159,21 @@ Run tests:
 ```bash
 uv run pytest
 ```
+
+## DB Cleanup Worker
+Dry-run (Docker app container):
+```bash
+docker compose exec app python scripts/cleanup_db.py --batch-size 500
+```
+
+Execute deletion:
+```bash
+docker compose exec app python scripts/cleanup_db.py --execute --batch-size 500
+```
+
+Local uv mode example:
+```bash
+uv run python scripts/cleanup_db.py \
+  --database-url "postgresql+psycopg://app:app@localhost:5432/filesharing" \
+  --batch-size 500
+```
