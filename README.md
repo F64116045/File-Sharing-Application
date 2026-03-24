@@ -32,6 +32,7 @@ This project currently supports:
 - API: FastAPI
 - DB: PostgreSQL
 - Object Storage: MinIO (S3-compatible)
+- Background worker: Scheduled DB cleanup script
 - Migration: Alembic
 - Local dev: uv
 - Container: Docker Compose
@@ -46,7 +47,9 @@ flowchart LR
     subgraph App[Backend]
       API[FastAPI API]
       DB[(PostgreSQL)]
+      CW[Cleanup Worker / Scheduler]
       API --> DB
+      CW --> DB
     end
 
     subgraph Storage[Object Storage]
@@ -66,6 +69,9 @@ flowchart LR
     API -->|Validate token + expiry| DB
     API -->|307 redirect with presigned GET URL| FE
     FE -->|Direct download| S3
+
+    CW -->|Delete expired shares| DB
+    CW -->|Delete stale uploads| DB
 ```
 
 ### Sequence Diagram
