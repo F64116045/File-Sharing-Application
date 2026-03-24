@@ -150,15 +150,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 4. Open generated share URL and verify download
 
 ## Testing
-Install test dependencies:
-```bash
-uv sync --extra dev
-```
-
-Run tests:
-```bash
-uv run pytest
-```
+Testing instructions are documented in `docs/TESTING.md`.
 
 ## DB Cleanup Worker
 Dry-run (Docker app container):
