@@ -39,39 +39,33 @@ This project currently supports:
 
 ### System Diagram
 ```mermaid
-flowchart LR
-    subgraph Client[Client]
-      FE[Browser / Frontend]
-    end
+flowchart TB
+    U[User]
+    FE[Browser Frontend]
 
-    subgraph App[Backend]
+    subgraph AppLayer[Application Layer]
       API[FastAPI API]
-      DB[(PostgreSQL)]
-      CW[Cleanup Worker / Scheduler]
-      API --> DB
-      CW --> DB
+      DB[(PostgreSQL Metadata)]
     end
 
-    subgraph Storage[Object Storage]
-      S3[(MinIO / S3)]
+    subgraph StorageLayer[Storage Layer]
+      S3[(MinIO S3 Object Storage)]
     end
 
-    FE -->|Initiate upload| API
-    API -->|Presigned PUT URL| FE
-    FE -->|Direct file upload| S3
-    FE -->|Complete upload| API
-    API -->|HEAD object verify| S3
+    subgraph OpsLayer[Operations]
+      CW[Cleanup Worker Scheduler]
+    end
 
-    FE -->|Create share link| API
-    API -->|Store token hash + expiry| DB
+    U --> FE
 
-    FE -->|GET /s/:token| API
-    API -->|Validate token + expiry| DB
-    API -->|307 redirect with presigned GET URL| FE
-    FE -->|Direct download| S3
+    FE -->|Initiate upload, complete upload, create share, access share link| API
+    API -->|Issue presigned upload and download URLs| FE
 
-    CW -->|Delete expired shares| DB
-    CW -->|Delete stale uploads| DB
+    FE -->|Direct file upload and download| S3
+    API -->|Object verify via HEAD| S3
+
+    API -->|Validate token and expiry| DB
+    CW -->|Delete expired shares and stale unfinished uploads| DB
 ```
 
 ### Sequence Diagram
