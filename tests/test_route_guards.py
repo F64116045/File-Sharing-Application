@@ -1,4 +1,5 @@
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -25,6 +26,11 @@ class FakeSession:
         return None
 
 
+class FakeRequest:
+    def __init__(self):
+        self.state = SimpleNamespace(request_id="test-request-id")
+
+
 def test_create_share_rejects_when_upload_not_completed():
     file_id = uuid.uuid4()
     db = FakeSession(
@@ -37,9 +43,10 @@ def test_create_share_rejects_when_upload_not_completed():
             is_uploaded=False,
         )
     )
+    request = FakeRequest()
 
     with pytest.raises(HTTPException) as exc:
-        create_share(file_id=file_id, expires_in_hours=24, db=db)
+        create_share(file_id=file_id, request=request, expires_in_hours=24, db=db)
 
     assert exc.value.status_code == 409
     assert exc.value.detail == "File upload not completed"
@@ -47,9 +54,10 @@ def test_create_share_rejects_when_upload_not_completed():
 
 def test_download_rejects_invalid_share_token():
     db = FakeSession(share_obj=None)
+    request = FakeRequest()
 
     with pytest.raises(HTTPException) as exc:
-        download_by_share_token(token="invalid-token", db=db)
+        download_by_share_token(token="invalid-token", request=request, db=db)
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Invalid share link"
