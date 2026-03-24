@@ -165,3 +165,37 @@ def test_e2e_expired_share_returns_410():
         pytest.fail("expected expired share error")
     except urllib.error.HTTPError as exc:
         assert exc.code == 410
+
+
+@pytest.mark.integration
+def test_e2e_complete_upload_size_mismatch_returns_409():
+    _assert_integration_env_available()
+
+    declared_size = 10
+    actual_content = b"short"
+    assert len(actual_content) != declared_size
+
+    initiate_status, initiate_data = _json_request(
+        "POST",
+        f"{BASE_URL}/api/v1/uploads/initiate",
+        payload={
+            "original_name": "mismatch.txt",
+            "mime_type": "text/plain",
+            "size_bytes": declared_size,
+        },
+    )
+    assert initiate_status == 200
+
+    put_status = _put_binary(initiate_data["upload_url"], actual_content, "text/plain")
+    assert put_status in {200, 204}
+
+    try:
+        _json_request(
+            "POST",
+            f"{BASE_URL}/api/v1/uploads/{initiate_data['file_id']}/complete",
+        )
+        pytest.fail("expected size mismatch error")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 409
+        body = json.loads(exc.read().decode("utf-8"))
+        assert body.get("detail") == "Uploaded object size mismatch"
