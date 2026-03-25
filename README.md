@@ -32,7 +32,7 @@ This project currently supports:
 - API: FastAPI
 - DB: PostgreSQL
 - Object Storage: MinIO (S3-compatible)
-- Background worker: Scheduled DB cleanup script
+- Maintenance: DB cleanup script
 - Migration: Alembic
 - Local dev: uv
 - Container: Docker Compose
@@ -53,7 +53,7 @@ flowchart TB
     end
 
     subgraph OpsLayer[Operations]
-      CW[Cleanup Worker Scheduler]
+      CW[Cleanup Worker Script]
     end
 
     U --> FE
@@ -153,14 +153,14 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 Testing instructions are documented in [docs/TESTING.md](docs/TESTING.md).
 
 ## DB Cleanup Worker
-Dry-run (Docker app container):
+Dry-run (Docker cleanup service):
 ```bash
-docker compose exec app python scripts/cleanup_db.py --batch-size 500
+docker compose --profile ops run --rm cleanup
 ```
 
 Execute deletion:
 ```bash
-docker compose exec app python scripts/cleanup_db.py --execute --batch-size 500
+docker compose --profile ops run --rm cleanup python scripts/cleanup_db.py --execute --batch-size 500 --max-batches 10
 ```
 
 Local uv mode example:
